@@ -51,49 +51,82 @@ def es_factible(asigna: dict) -> bool:
 # ----------------------------------------------------------------------
 #  3. Decodificador heurístico (random-keys → solución factible)
 # ----------------------------------------------------------------------
-def decode(keys: np.ndarray):
+def decode(keys):
     """
-    1) Ordena pedidos por prioridad ascendente (clave aleatoria).
-    2) Para cada pedido, elige la salida LIBRE que minimiza el makespan
-       provisional (best-fit min-max).
-    3) Retira la salida elegida de las libres (1 salida = 1 pedido).
-    4) Devuelve (asignación, carga_por_zona, makespan).
+    1) Ordena los pedidos por prioridad ascendente (clave aleatoria).
+    2) Para cada pedido en ese orden, elige la salida LIBRE que menos aumenta
+       el makespan provisional (heurística best-fit min-max).
+    3) Cada salida solo puede atender un pedido (1 salida = 1 pedido).
+    4) Devuelve la asignación, la carga por zona y el makespan final.
     """
-    # Paso 1: derivar orden de pedidos según keys
-    orden = [p for _, p in sorted(zip(keys, pedidos))]
+    # Paso 1: crear lista de pares (clave, pedido)
+    pares = []
+    for i in range(len(keys)):
+        valor = keys[i]
+        pedido = pedidos[i]
+        pares.append((valor, pedido))
+    # Ordenar la lista de pares por la clave (posición 0 de la tupla)
+    pares.sort(key=lambda tupla: tupla[0])
 
-    # Inicializar cargas zonales a cero
-    carga = {z: 0.0 for z in zonas}
+    # Extraer el orden de pedidos ya ordenado
+    orden = []
+    for tupla in pares:
+        # tupla[1] es el pedido
+        orden.append(tupla[1])
 
-    # Todas las salidas empiezan libres
-    libres = set(salidas)
+    # Paso 2: inicializar cargas zonales a cero
+    carga = {}
+    for z in zonas:
+        carga[z] = 0.0
 
+    # Lista (conjunto) de salidas aún libres
+    libres = set()
+    for k in salidas:
+        libres.add(k)
+
+    # Diccionario para la asignación final
     asigna = {}
 
-    # Paso 2: asignar cada pedido
+    # Recorrer cada pedido según la prioridad establecida
     for p in orden:
-        mejor_k, mejor_mk = None, float("inf")
+        mejor_salida = None
+        mejor_makespan = float("inf")
 
-        # Probar cada salida libre
+        # Probar cada salida que aún esté libre
         for k in libres:
-            z = zona_de_salida[k]
-            nueva = carga[z] + tiempo[(p, k)]
-            mk_prov = max(nueva, max(carga.values()))
-            # Mantener la salida que produzca el makespan provisional más bajo
-            if mk_prov < mejor_mk:
-                mejor_mk, mejor_k = mk_prov, k
+            zona = zona_de_salida[k]
+            # calcular la carga de esa zona si asignamos p a k
+            carga_nueva = carga[zona] + tiempo[(p, k)]
+            # determinar el makespan provisional:
+            # es el máximo entre carga_nueva y las cargas actuales de otras zonas
+            provisional = carga_nueva
+            for z2 in carga:
+                if carga[z2] > provisional:
+                    provisional = carga[z2]
 
-        # Si no hay salida libre algo anda mal (instancia inviable)
-        if mejor_k is None:
+            # quedarse con la salida que dé el menor makespan provisional
+            if provisional < mejor_makespan:
+                mejor_makespan = provisional
+                mejor_salida = k
+
+        # Si no se encontró ninguna salida libre, la instancia es inviable
+        if mejor_salida is None:
             raise ValueError("No quedan salidas libres para asignar el pedido.")
 
-        # Confirmar asignación y actualizar estructuras
-        asigna[p] = mejor_k
-        libres.remove(mejor_k)  # R4
-        carga[zona_de_salida[mejor_k]] += tiempo[(p, mejor_k)]
+        # Paso 3: asignar y actualizar estructuras
+        asigna[p] = mejor_salida
+        # quitar esa salida de las disponibles
+        libres.remove(mejor_salida)
+        # actualizar la carga de su zona
+        zona_seleccionada = zona_de_salida[mejor_salida]
+        carga[zona_seleccionada] = carga[zona_seleccionada] + tiempo[(p, mejor_salida)]
 
-    # Paso 3: calcular makespan final
-    makespan = max(carga.values())
+    # Paso 4: calcular el makespan final (zona con mayor carga)
+    makespan = None
+    for z in carga:
+        if makespan is None or carga[z] > makespan:
+            makespan = carga[z]
+
     return asigna, carga, makespan
 
 
@@ -102,33 +135,65 @@ def decode(keys: np.ndarray):
 # ----------------------------------------------------------------------
 def mejora_swap(asigna: dict, carga: dict, mk: float, iter_max: int = 300):
     """
-    Intenta iter_max intercambios aleatorios entre dos pedidos:
-      - Calcula nuevo makespan si se intercambian sus salidas.
-      - Acepta el swap si reduce el makespan (first-improve).
-    Retorna la asignación, cargas y makespan actualizados.
+    Intenta hasta iter_max intercambios aleatorios entre dos pedidos:
+      - Calcula el makespan si se intercambian sus salidas.
+      - Si el nuevo makespan es menor, acepta el intercambio (first-improve).
+    Devuelve la asignación, las cargas y el makespan actualizados.
     """
-    pedidos_lista = list(pedidos)
+    # 1) Convertir el iterable de pedidos en una lista para acceder por índice
+    pedidos_lista = []
+    for p in pedidos:
+        pedidos_lista.append(p)
+
+    # 2) Iterar hasta iter_max intentos de swap
     for _ in range(iter_max):
-        p1, p2 = random.sample(pedidos_lista, 2)
-        k1, k2 = asigna[p1], asigna[p2]
+        # 2.1) Elegir dos índices distintos al azar
+        idx1 = random.randint(0, len(pedidos_lista) - 1)
+        idx2 = random.randint(0, len(pedidos_lista) - 1)
+        # Asegurar que no sean iguales
+        while idx2 == idx1:
+            idx2 = random.randint(0, len(pedidos_lista) - 1)
+
+        # 2.2) Obtener los pedidos y sus salidas actuales
+        p1 = pedidos_lista[idx1]
+        p2 = pedidos_lista[idx2]
+        k1 = asigna[p1]
+        k2 = asigna[p2]
+
+        # Si ambos pedidos ya usan la misma salida, saltar
         if k1 == k2:
-            continue  # mismo k, nada que intercambiar
+            continue
 
-        # Zonas originales
-        z1, z2 = zona_de_salida[k1], zona_de_salida[k2]
+        # 2.3) Determinar las zonas de cada salida
+        z1 = zona_de_salida[k1]
+        z2 = zona_de_salida[k2]
 
-        # Copia de cargas para prueba
-        carga_tmp = carga.copy()
-        # Ajuste incremental de tiempos
-        carga_tmp[z1] += tiempo[(p2, k1)] - tiempo[(p1, k1)]
-        carga_tmp[z2] += tiempo[(p1, k2)] - tiempo[(p2, k2)]
-        nuevo_mk = max(carga_tmp.values())
+        # 2.4) Copiar las cargas actuales para simular el swap
+        carga_tmp = {}
+        for z in carga:
+            carga_tmp[z] = carga[z]
 
-        # Si mejora, aceptar intercambio
-        if nuevo_mk < mk:
-            asigna[p1], asigna[p2] = k2, k1
-            carga, mk = carga_tmp, nuevo_mk
+        # 2.5) Ajustar cargas tras el hipotético intercambio
+        # Pedido p2 en salida k1 y p1 en salida k2
+        carga_tmp[z1] = carga_tmp[z1] + tiempo[(p2, k1)] - tiempo[(p1, k1)]
+        carga_tmp[z2] = carga_tmp[z2] + tiempo[(p1, k2)] - tiempo[(p2, k2)]
 
+        # 2.6) Calcular el nuevo makespan
+        new_mk = None
+        for z in carga_tmp:
+            if new_mk is None or carga_tmp[z] > new_mk:
+                new_mk = carga_tmp[z]
+
+        # 2.7) Si mejora, aceptar el swap
+        if new_mk < mk:
+            # Intercambiar las salidas de p1 y p2
+            asigna[p1] = k2
+            asigna[p2] = k1
+            # Actualizar cargas y makespan actuales
+            carga = carga_tmp
+            mk = new_mk
+
+    # 3) Devolver los valores posiblemente mejorados
     return asigna, carga, mk
 
 
@@ -145,69 +210,123 @@ def brkga(
     seed: int = 42,
 ):
     """
-    – Inicializa población aleatoria de vectores de claves.
-    – Cada generación: selecciona élite, cruza (biased crossover),
-      añade mutantes, evalúa y refina élite con swaps.
-    – Para si no hay mejora tras sin_mejora_max generaciones.
+    Biased Random-Key Genetic Algorithm con refinamiento memético:
+      - generaciones: máximo de iteraciones evolutivas
+      - tam_pob: número de individuos en la población
+      - frac_elite: proporción de individuos élite que se conservan
+      - frac_mut: proporción de mutantes nuevos en cada generación
+      - rho: probabilidad de heredar el gen del padre élite en el cruce
+      - sin_mejora_max: generaciones consecutivas sin mejora para detenerse
+      - seed: semilla para reproducibilidad
+    Retorna:
+      asig  (dict): asignación pedido→salida de la mejor solución
+      car   (dict): cargas por zona de esa solución
+      mk    (float): makespan (valor objetivo) de esa solución
     """
+    # 1) Fijar semilla para librerías random y numpy
     random.seed(seed)
     np.random.seed(seed)
 
-    n_ped = len(pedidos)
-    n_elite = int(tam_pob * frac_elite)
-    n_mut = int(tam_pob * frac_mut)
+    # 2) Calcular tamaños dependientes de tam_pob
+    n_ped = len(pedidos)  # número de pedidos
+    n_elite = int(tam_pob * frac_elite)  # cuántos van a élite
+    n_mut = int(tam_pob * frac_mut)  # cuántos serán mutantes
 
-    # 5.1 Población inicial
-    poblacion = [np.random.rand(n_ped) for _ in range(tam_pob)]
-    datos = [decode(ind) for ind in poblacion]  # lista de tuplas (asig, carga, mk)
-    mejor_sol = min(datos, key=lambda d: d[2])
+    # 3) Generar población inicial: lista de vectores de claves
+    poblacion = []
+    for _ in range(tam_pob):
+        vec = np.random.rand(n_ped)  # vector de claves [0,1)
+        poblacion.append(vec)
+
+    # 4) Evaluar toda la población con el decodificador
+    datos = []
+    for ind in poblacion:
+        solucion = decode(ind)  # (asig, carga, makespan)
+        datos.append(solucion)
+
+    # 5) Identificar la mejor solución inicial
+    mejor_sol = datos[0]
+    for sol in datos:
+        if sol[2] < mejor_sol[2]:
+            mejor_sol = sol
     sin_mejora = 0
 
-    # 5.2 Ciclo evolutivo
+    # 6) Bucle evolutivo principal
     for gen in range(generaciones):
-        # Seleccionar élite
-        pares = sorted(zip([d[2] for d in datos], poblacion), key=lambda x: x[0])
-        elite_ind = [ind.copy() for (_, ind) in pares[:n_elite]]
-        no_elite = [ind for (_, ind) in pares[n_elite:]]
+        # --- 6.1) Selección por fitness ---
+        # Construir lista de tuplas (fitness, individuo)
+        pares = []
+        for i in range(len(poblacion)):
+            fitness = datos[i][2]  # makespan del i-ésimo
+            indiv = poblacion[i]
+            pares.append((fitness, indiv))
+        # Ordenar de menor a mayor fitness
+        pares.sort(key=lambda tupla: tupla[0])
 
-        # 5.2.1 Nuevo pool
-        nueva = elite_ind.copy()
+        # Extraer élite y no-élite
+        elite_ind = []
+        no_elite_ind = []
+        for i in range(len(pares)):
+            if i < n_elite:
+                # Copia profunda para no compartir la misma matriz
+                elite_ind.append(pares[i][1].copy())
+            else:
+                no_elite_ind.append(pares[i][1])
 
-        # 5.2.2 Cruce sesgado (biased crossover)
+        # --- 6.2) Formación de nueva población ---
+        nueva = []
+        # 6.2.1) Copiar élite
+        for ind in elite_ind:
+            nueva.append(ind.copy())
+
+        # 6.2.2) Cruce sesgado (biased crossover)
         while len(nueva) < tam_pob - n_mut:
-            pe = random.choice(elite_ind)
-            pn = random.choice(no_elite)
+            # Elegir un padre élite y uno no-élite al azar
+            padre_e = elite_ind[random.randint(0, len(elite_ind) - 1)]
+            padre_n = no_elite_ind[random.randint(0, len(no_elite_ind) - 1)]
+            # Crear máscara booleana
             mask = np.random.rand(n_ped) < rho
-            hijo = np.where(mask, pe, pn)
+            # Generar hijo mezclando genes
+            hijo = np.where(mask, padre_e, padre_n)
             nueva.append(hijo)
 
-        # 5.2.3 Mutantes aleatorios
-        nueva.extend(np.random.rand(n_mut, n_ped))
+        # 6.2.3) Añadir mutantes puramente aleatorios
+        for _ in range(n_mut):
+            mutante = np.random.rand(n_ped)
+            nueva.append(mutante)
 
-        # 5.2.4 Evaluar nueva población
+        # --- 6.3) Evaluar nueva población ---
         poblacion = nueva
-        datos = [decode(ind) for ind in poblacion]
+        datos = []
+        for ind in poblacion:
+            datos.append(decode(ind))
 
-        # 5.2.5 Memética: refinamiento de swaps en élite
+        # --- 6.4) Memética: refinamiento de la élite por swaps ---
         for i in range(n_elite):
-            asig, car, mk = datos[i]
-            asig, car, mk = mejora_swap(asig, car, mk, iter_max=150)
-            datos[i] = (asig, car, mk)
+            asigna_i, carga_i, mk_i = datos[i]
+            # Aplicar búsqueda local de intercambio
+            asigna_i, carga_i, mk_i = mejora_swap(asigna_i, carga_i, mk_i, iter_max=150)
+            datos[i] = (asigna_i, carga_i, mk_i)
 
-        # 5.2.6 Actualizar mejor global y chequeo de parada
-        actual_mejor = min(datos, key=lambda d: d[2])
+        # --- 6.5) Actualizar la mejor solución global ---
+        actual_mejor = datos[0]
+        for sol in datos:
+            if sol[2] < actual_mejor[2]:
+                actual_mejor = sol
+
         if actual_mejor[2] < mejor_sol[2] - 1e-9:
             mejor_sol = actual_mejor
             sin_mejora = 0
         else:
             sin_mejora += 1
+            # Detener si no hay mejora tras sin_mejora_max generaciones
             if sin_mejora >= sin_mejora_max:
                 print(f"Convergencia en generación {gen}")
                 break
 
-    # Desempaquetar solución final
+    # 7) Desempaquetar y retornar la mejor solución hallada
     asig, car, mk = mejor_sol
-    assert es_factible(asig), "Error: solución no factible."
+    assert es_factible(asig), "Solución no factible"
     return asig, car, mk
 
 

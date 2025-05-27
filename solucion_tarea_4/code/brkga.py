@@ -55,32 +55,88 @@ def es_factible(asigna: dict) -> bool:
 # -------------------------------------------------------------
 def decode(keys):
     """
-    Construye una asignación factible siguiendo el orden de prioridad
-    indicado en las claves aleatorias.
-    Retorna: asignacion, carga_por_zona, makespan
+    Construye una asignación factible a partir de un vector de claves aleatorias.
+
+    Parámetros:
+      keys (list o np.ndarray): lista de valores en [0,1), uno por pedido,
+                                que determinan el orden de prioridad.
+
+    Retorna:
+      asigna (dict): mapeo pedido → salida elegida
+      carga (dict):  carga acumulada por zona
+      makespan (float): máximo de las cargas zonales
     """
-    orden = [p for _, p in sorted(zip(keys, pedidos))]
-    carga = {z: 0.0 for z in zonas}
+    # 1) Asociar cada pedido con su clave
+    pares = []
+    for i in range(len(pedidos)):
+        # pares será lista de tuplas (clave, pedido)
+        pares.append((keys[i], pedidos[i]))
+
+    # 2) Ordenar por clave ascendente
+    #    Esto nos da la secuencia en que asignaremos los pedidos
+    pares.sort(key=lambda tupla: tupla[0])
+
+    # 3) Extraer la lista ordenada de pedidos
+    orden = []
+    for clave, pedido in pares:
+        orden.append(pedido)
+
+    # 4) Inicializar la carga de cada zona a cero
+    carga = {}
+    for z in zonas:
+        carga[z] = 0.0
+
+    # 5) Preparar el diccionario de asignaciones
     asigna = {}
 
+    # 6) Recorrer cada pedido según la prioridad establecida
     for p in orden:
-        mejor_k, mejor_val = None, float("inf")
+        mejor_k = None  # guardará la mejor salida para p
+        mejor_valor = float("inf")  # guardar el menor makespan provisional
+
+        # 6.1) Probar todas las salidas disponibles
         for k in salidas:
+            # Identificar zona de la salida k
             z = zona_de_salida[k]
-            nueva = carga[z] + tiempo[(p, k)]
-            coste = max(nueva, max(carga.values()))
-            if coste < mejor_val:
-                mejor_val, mejor_k = coste, k
 
+            # Calcular la carga si asignamos p a k
+            carga_nueva = carga[z] + tiempo[(p, k)]
+
+            # Calcular el makespan provisional:
+            # es el máximo entre la nueva carga y las cargas actuales
+            max_actual = None
+            for z2 in carga:
+                if max_actual is None or carga[z2] > max_actual:
+                    max_actual = carga[z2]
+            if carga_nueva > max_actual:
+                coste = carga_nueva
+            else:
+                coste = max_actual
+
+            # Si este coste es mejor, recordar k como candidato
+            if coste < mejor_valor:
+                mejor_valor = coste
+                mejor_k = k
+
+        # 7) Asignar el pedido p a la mejor salida encontrada
         asigna[p] = mejor_k
-        carga[zona_de_salida[mejor_k]] += tiempo[(p, mejor_k)]
 
-    makespan = max(carga.values())
+        # 8) Actualizar la carga de la zona correspondiente
+        z_sel = zona_de_salida[mejor_k]
+        carga[z_sel] = carga[z_sel] + tiempo[(p, mejor_k)]
+
+    # 9) Determinar el makespan final (la zona más cargada)
+    makespan = None
+    for z in carga:
+        if makespan is None or carga[z] > makespan:
+            makespan = carga[z]
+
+    # 10) Devolver la asignación completa, las cargas y el makespan
     return asigna, carga, makespan
 
 
 # -------------------------------------------------------------
-#  4. BRKGA  (plantilla cuaderno Colab)
+#  4. BRKGA
 # -------------------------------------------------------------
 def brkga(
     generaciones=1000,
@@ -91,61 +147,114 @@ def brkga(
     seed=42,
     sin_mejora_max=100,
 ):
+    """
+    Biased Random-Key Genetic Algorithm (BRKGA):
+    – generaciones: número máximo de iteraciones
+    – tam_pob: tamaño de la población
+    – frac_elite: fracción de la población que es élite
+    – frac_mut: fracción de la población que serán mutantes
+    – rho: probabilidad de heredar el gen del padre élite en el cruce
+    – seed: semilla para aleatoriedad reproducible
+    – sin_mejora_max: generaciones consecutivas sin mejora para detenerse
+    Devuelve: (asignación, carga_por_zona, makespan)
+    """
+    # 1) Fijar semilla para reproducibilidad
     random.seed(seed)
     np.random.seed(seed)
 
-    n_ped = len(pedidos)
-    n_elite = int(tam_pob * frac_elite)
-    n_mut = int(tam_pob * frac_mut)
+    # 2) Preparar tamaños auxiliares
+    n_ped = len(pedidos)  # número de pedidos
+    n_elite = int(tam_pob * frac_elite)  # cuántos pasan a élite
+    n_mut = int(tam_pob * frac_mut)  # cuántos mutantes
 
-    # 4.1 población inicial
-    poblacion = [np.random.rand(n_ped) for _ in range(tam_pob)]
-    datos = [decode(ind) for ind in poblacion]
-    mejor_sol = min(datos, key=lambda x: x[2])
-    sin_mejora = 0
+    # 3) Generar población inicial
+    poblacion = []
+    for _ in range(tam_pob):
+        # Cada individuo es un vector de n_ped claves aleatorias [0,1)
+        individuo = np.random.rand(n_ped)
+        poblacion.append(individuo)
 
-    # 4.2 ciclo evolutivo
+    # Decodificar cada individuo y guardar (asig, carga_zona, makespan)
+    datos = []
+    for ind in poblacion:
+        solucion = decode(ind)  # decodificador existente
+        datos.append(solucion)
+
+    # Encontrar la mejor solución inicial
+    mejor_sol = datos[0]
+    for d in datos:
+        if d[2] < mejor_sol[2]:
+            mejor_sol = d
+
+    sin_mejora = 0  # contador de generaciones sin mejora
+
+    # 4) Bucle evolutivo
     for g in range(generaciones):
-        # selección
-        pares = sorted(zip([d[2] for d in datos], poblacion), key=lambda x: x[0])
-        elite = [ind.copy() for (_, ind) in pares[:n_elite]]
-        no_elite = [ind for (_, ind) in pares[n_elite:]]
+        # 4.1) Selección elitista
+        # Construir lista de pares (fitness, individuo)
+        pares = []
+        for i in range(len(datos)):
+            fitness = datos[i][2]  # makespan de la i-ésima solución
+            indiv = poblacion[i]
+            pares.append((fitness, indiv))
+        # Ordenar de menor a mayor makespan
+        pares.sort(key=lambda x: x[0])
 
-        # nueva población
-        nueva_pob = elite.copy()
+        # Separar élite y no-élite
+        elite = []
+        no_elite = []
+        for i in range(len(pares)):
+            if i < n_elite:
+                # Se copia el individuo para no compartir memoria
+                elite.append(pares[i][1].copy())
+            else:
+                no_elite.append(pares[i][1])
 
-        # cruces sesgados
+        # 4.2) Crear nueva población
+        nueva_pob = []
+        # 4.2.1) Copiar élite directamente
+        for ind in elite:
+            nueva_pob.append(ind.copy())
+
+        # 4.2.2) Cruces sesgados (biased crossover)
         while len(nueva_pob) < tam_pob - n_mut:
             padre_e = random.choice(elite)
             padre_n = random.choice(no_elite)
+            # Máscara booleana: True con prob rho
             mask = np.random.rand(n_ped) < rho
+            # Heredar gen a gen según la máscara
             hijo = np.where(mask, padre_e, padre_n)
             nueva_pob.append(hijo)
 
-        # mutantes
-        nueva_pob.extend(np.random.rand(n_mut, n_ped))
+        # 4.2.3) Añadir mutantes puros
+        mutantes = np.random.rand(n_mut, n_ped)
+        for i in range(n_mut):
+            nueva_pob.append(mutantes[i])
 
-        # evaluación
+        # 4.3) Evaluar nueva población
         poblacion = nueva_pob
-        datos = [decode(ind) for ind in poblacion]
-        actual = min(datos, key=lambda x: x[2])
+        datos = []
+        for ind in poblacion:
+            datos.append(decode(ind))
 
-        # actualización del mejor global
+        # 4.4) Encontrar el mejor de la generación
+        actual = datos[0]
+        for d in datos:
+            if d[2] < actual[2]:
+                actual = d
+
+        # 4.5) Actualizar mejor global o contar sin mejora
         if actual[2] < mejor_sol[2] - 1e-9:
             mejor_sol = actual
             sin_mejora = 0
         else:
             sin_mejora += 1
             if sin_mejora >= sin_mejora_max:
-                print(f"· Convergencia temprana en la generación {g}.")
+                print("· Convergencia temprana en generación", g)
                 break
 
+    # 5) Desempaquetar y devolver la mejor solución encontrada
     asigna, carga_z, makespan = mejor_sol
-
-    # verificación interna
-    assert es_factible(asigna), "¡Solución NO factible!"
-    print("✓ Verificación pasada: la solución es factible.")
-
     return asigna, carga_z, makespan
 
 

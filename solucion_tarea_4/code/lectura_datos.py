@@ -1,6 +1,6 @@
 import pandas as pd
 
-nombre_archivo_data = "Data_80_Salidas_composición_zonas_homogéneas"
+nombre_archivo_data = "Data_80_Salidas_composición_zonas_heterogéneas"
 
 excel_modelo = pd.ExcelFile(f"../Data_PTL/{nombre_archivo_data}.xlsx")
 
