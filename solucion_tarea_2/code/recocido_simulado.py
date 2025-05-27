@@ -3,7 +3,7 @@ import math
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from solucion_tarea_2.code.lectura_datos import (
+from lectura_datos import (
     pedidos,
     zonas,
     salidas,

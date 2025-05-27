@@ -1,7 +1,7 @@
 import random
 import pandas as pd
 import matplotlib.pyplot as plt
-from solucion_tarea_1.code.lectura_datos import (
+from lectura_datos import (
     pedidos,
     salidas,
     zonas,
